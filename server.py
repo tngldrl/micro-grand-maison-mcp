@@ -1,8 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import os
 import json
+import tempfile
+import subprocess
+import shutil
+import httpx
 from dotenv import load_dotenv
 
 from scanner import scan_code_chunks, scan_metadata
@@ -21,24 +25,46 @@ if not os.path.exists(output_dir):
 app.mount("/static/avatars", StaticFiles(directory=output_dir), name="avatars")
 
 class AnalyzeRequest(BaseModel):
-    repo_paths: list[str]
+    repo_urls: list[str]
+    project_id: str
+    callback_url: str
 
-@app.post("/analyze")
-def analyze(req: AnalyzeRequest):
-    if not GCP_PROJECT_ID:
-        raise HTTPException(status_code=500, detail="GCP_PROJECT_ID is not configured.")
-        
-    repo_paths = req.repo_paths
-    if not repo_paths:
-        raise HTTPException(status_code=400, detail="No repo_paths provided.")
-
+def run_async_analysis(repo_urls: list[str], callback_url: str, project_id: str):
+    cloned_dirs = []
+    repo_configs = []
+    
     try:
+        # Clone each repository dynamically
+        for url in repo_urls:
+            url_str = url.strip()
+            if not url_str:
+                continue
+                
+            temp_dir = tempfile.mkdtemp(prefix="repo-")
+            cloned_dirs.append(temp_dir)
+            
+            # Run git clone --depth 1
+            print(f"Cloning {url_str} to {temp_dir}...")
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", url_str, temp_dir],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            if result.returncode != 0:
+                raise Exception(f"Failed to clone repository {url_str}: {result.stderr}")
+                
+            repo_configs.append((temp_dir, url_str))
+            
+        if not repo_configs:
+            raise Exception("No valid repositories to analyze.")
+
         # PHASE 1
-        metadata_context = scan_metadata(repo_paths)
+        metadata_context = scan_metadata(repo_configs)
         skeleton_json = extract_skeleton(metadata_context, GCP_PROJECT_ID)
         
         # PHASE 2
-        code_chunks = scan_code_chunks(repo_paths)
+        code_chunks = scan_code_chunks(repo_configs)
         partial_graphs = []
         for i, chunk_context in enumerate(code_chunks):
             try:
@@ -75,10 +101,51 @@ def analyze(req: AnalyzeRequest):
             # Note: Hardcoded to localhost:8001 for MVP
             ms["avatar_image_url"] = f"http://localhost:8001/static/avatars/{image_filename}"
             
-        return data
+        # Send callback with success status
+        callback_payload = {
+            "project_id": project_id,
+            "status": "success",
+            "data": data
+        }
+        with httpx.Client(timeout=60.0) as client:
+            resp = client.post(callback_url, json=callback_payload)
+            resp.raise_for_status()
+            print(f"Callback sent successfully to {callback_url}")
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Analysis failed for project {project_id}: {e}")
+        # Send callback with error status
+        callback_payload = {
+            "project_id": project_id,
+            "status": "error",
+            "error": str(e)
+        }
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                client.post(callback_url, json=callback_payload)
+        except Exception as callback_err:
+            print(f"Failed to send error callback to {callback_url}: {callback_err}")
+    finally:
+        # Cleanup cloned directories
+        for temp_dir in cloned_dirs:
+            try:
+                shutil.rmtree(temp_dir)
+                print(f"Cleaned up temporary directory: {temp_dir}")
+            except Exception as cleanup_err:
+                print(f"Error cleaning up temporary directory {temp_dir}: {cleanup_err}")
+
+@app.post("/analyze")
+def analyze(req: AnalyzeRequest, background_tasks: BackgroundTasks):
+    if not GCP_PROJECT_ID:
+        raise HTTPException(status_code=500, detail="GCP_PROJECT_ID is not configured.")
+        
+    background_tasks.add_task(
+        run_async_analysis,
+        req.repo_urls,
+        req.callback_url,
+        req.project_id
+    )
+    return {"status": "queued"}
 
 class Message(BaseModel):
     role: str

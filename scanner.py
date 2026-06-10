@@ -10,20 +10,20 @@ def load_gitignore(repo_path: str):
             return pathspec.PathSpec.from_lines(pathspec.patterns.GitWildMatchPattern, lines)
     return None
 
-def scan_metadata(repo_paths: list) -> str:
+def scan_metadata(repo_configs: list) -> str:
     """
     Scan only metadata files (configs, package definitions, root README, and docs/spec folders).
     This provides a lightweight high-level view of the ecosystem.
+    repo_configs: list of (repo_path, original_url) tuples
     """
     metadata_files = {'docker-compose.yml', 'pom.xml', 'package.json', 'go.mod', 'Dockerfile'}
     allowed_exts = ('.yaml', '.yml')
     doc_dirs = {'spec', 'docs'}
     
     all_output = []
-    for repo_path in repo_paths:
-        repo_name = os.path.basename(os.path.normpath(repo_path))
+    for repo_path, original_url in repo_configs:
         all_output.append("=" * 80)
-        all_output.append(f"=== REPOSITORY METADATA: {repo_name} ===")
+        all_output.append(f"=== REPOSITORY METADATA: {original_url} ===")
         all_output.append("=" * 80 + "\n")
         
         for root, dirs, files in os.walk(repo_path):
@@ -49,16 +49,17 @@ def scan_metadata(repo_paths: list) -> str:
                 if include:
                     try:
                         with open(file_path, "r", encoding="utf-8") as f:
-                            all_output.append(f"--- File: {rel_path} ---\n{f.read()}\n")
+                            all_output.append(f"--- File: [{original_url}] {rel_path} ---\n{f.read()}\n")
                     except Exception:
                         pass
                         
     return "\n".join(all_output)
 
-def scan_code_chunks(repo_paths: list, max_chars: int = 300000) -> list:
+def scan_code_chunks(repo_configs: list, max_chars: int = 300000) -> list:
     """
     Scan multiple directories and pack files into chunks of up to max_chars.
     This entirely ignores repository boundaries and groups code purely by token limits.
+    repo_configs: list of (repo_path, original_url) tuples
     """
     default_ignores = [
         ".git", "node_modules", "venv", "__pycache__", ".next", "dist", "build", ".venv",
@@ -75,7 +76,7 @@ def scan_code_chunks(repo_paths: list, max_chars: int = 300000) -> list:
     current_chunk = []
     current_length = 0
     
-    for repo_path in repo_paths:
+    for repo_path, original_url in repo_configs:
         ignore_spec = load_gitignore(repo_path)
         
         for root, dirs, files in os.walk(repo_path):
@@ -99,7 +100,7 @@ def scan_code_chunks(repo_paths: list, max_chars: int = 300000) -> list:
                 try:
                     with open(file_path, "r", encoding="utf-8") as f:
                         content = f.read()
-                        file_block = f"--- File: {file_path} ---\n{content}\n{'-'*40}\n"
+                        file_block = f"--- File: [{original_url}] {rel_path} ---\n{content}\n{'-'*40}\n"
                         block_len = len(file_block)
                         
                         if current_length + block_len > max_chars and current_length > 0:
@@ -121,7 +122,8 @@ if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1:
         paths = sys.argv[1:]
-        chunks = scan_code_chunks(paths)
+        configs = [(p, p) for p in paths]
+        chunks = scan_code_chunks(configs)
         print(f"Generated {len(chunks)} chunks.")
     else:
         print("Usage: python scanner.py <path_to_directory1> [path_to_directory2 ...]")

@@ -84,7 +84,8 @@ def extract_partial_graph(chunk_context: str, skeleton_json: str, project_id: st
         "Your task is to analyze an ARBITRARY CHUNK of source code, using the provided overall ecosystem skeleton as background knowledge. "
         "This chunk may contain code for MULTIPLE distinct microservices, or just a fragment of one service. "
         "Identify WHICH logical service(s) from the skeleton this code belongs to. "
-        "Extract the roles, scales, and dependencies for ALL services found in this chunk. "
+        "Identify the source repository URL from the bracketed file prefixes (e.g. [https://github.com/...] in the file paths) for each service. "
+        "Extract the roles, scales, repository_url, and dependencies for ALL services found in this chunk. "
         "Design a character prompt representing each service found."
     )
     model = GenerativeModel("gemini-2.5-flash", system_instruction=[system_instruction])
@@ -94,6 +95,7 @@ def extract_partial_graph(chunk_context: str, skeleton_json: str, project_id: st
 
 Now, analyze the following arbitrary chunk of source code from the ecosystem.
 Extract the partial microservice profiles for EVERY service you identify in this chunk.
+Ensure you set the 'repository_url' for each microservice matching the repository URL found in the file path brackets (e.g., [https://github.com/owner/repo.git]).
 
 {WORLD_SETTING}
 
@@ -114,6 +116,7 @@ Code Chunk Context:
                         "scale_and_complexity": {"type": "STRING"},
                         "importance_and_centrality": {"type": "STRING"},
                         "role_type": {"type": "STRING"},
+                        "repository_url": {"type": "STRING"},
                         "dependencies": {
                             "type": "ARRAY",
                             "items": {
@@ -127,7 +130,7 @@ Code Chunk Context:
                         },
                         "avatar_prompt": {"type": "STRING"}
                     },
-                    "required": ["name", "description", "scale_and_complexity", "importance_and_centrality", "role_type", "dependencies", "avatar_prompt"]
+                    "required": ["name", "description", "scale_and_complexity", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt"]
                 }
             }
         },
@@ -152,6 +155,7 @@ I have analyzed the codebase in arbitrary chunks and generated partial JSON prof
 Your task is to merge these PARTIAL GRAPHS into a single, unified Logical Architecture JSON.
 Crucially: DEDUPLICATE components. If 'cartservice' appears in 5 different chunks, merge its descriptions and dependencies into ONE single 'cartservice' object.
 Resolve any conflicting names, ensure dependencies refer to existing logical services, and output the final validated array.
+Ensure you retain and resolve the correct 'repository_url' for each merged microservice.
 
 {WORLD_SETTING}
 
@@ -171,6 +175,7 @@ Partial Analyses (from various chunks):
                         "scale_and_complexity": {"type": "STRING"},
                         "importance_and_centrality": {"type": "STRING"},
                         "role_type": {"type": "STRING"},
+                        "repository_url": {"type": "STRING"},
                         "dependencies": {
                             "type": "ARRAY",
                             "items": {
@@ -184,7 +189,7 @@ Partial Analyses (from various chunks):
                         },
                         "avatar_prompt": {"type": "STRING"}
                     },
-                    "required": ["name", "description", "scale_and_complexity", "importance_and_centrality", "role_type", "dependencies", "avatar_prompt"]
+                    "required": ["name", "description", "scale_and_complexity", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt"]
                 }
             }
         },
