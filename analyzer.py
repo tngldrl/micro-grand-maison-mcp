@@ -26,14 +26,15 @@ Roles:
 - Patissier: Desserts, baked goods, bread.
 - Dishwasher (Steward): Washing dishes, cleaning, managing equipment.
 
-For each microservice, the `role_type` should be one of the above titles, and the `avatar_prompt` MUST describe an animal character performing this exact role in a bustling restaurant.
+For each microservice, the `role_type` should be one of the above titles, and the `avatar_prompt` MUST describe only the animal character itself performing this role (e.g., wearing the appropriate uniform, holding utensils/tools, or performing actions). The prompt MUST NOT describe any restaurant environment, table, kitchen, floor, background scenery, room, or setting.
 
-CRITICAL VISUAL CONSTRAINTS for `avatar_prompt`:
+CRITICAL VISUAL CONSTRAINTS for `avatar_prompt` (Integrate these strictly in English):
 1. Scale/Complexity -> Animal Size/Type: If the service is small/low complexity, choose a small agile animal (e.g., squirrel, bird). If it is large/complex, choose a large imposing animal (e.g., elephant, bear).
 2. Importance/Centrality -> Outfit/Aura: If the service is highly important/central, give them a highly decorated, luxurious uniform or a commanding aura. If peripheral/low importance, give them a simple basic uniform or apron.
-3. The character MUST be drawn in full-body. Add "Full-body shot of the character." to the prompt.
-4. The background MUST be completely empty/solid. Add "Solid black background, absolutely no background elements or scenery." to the prompt.
-5. The art style MUST be a friendly caricature. Add "Art style: Friendly and approachable animal caricature, non-photorealistic, stylized 2D illustration." to the prompt.
+3. The prompt MUST start with: "Full-body shot of the character, isolated, "
+4. The background MUST be completely flat, solid, and uniform chroma-key green. The prompt MUST end with: "The entire background is a single flat solid pure chroma-key green color (RGB: 0, 255, 0) with absolutely no details, no shadows, no flooring, no lighting effects on the background, and no scenery. The character is completely isolated against this flat green background."
+5. The art style MUST follow a Pokemon-style creature design. Add the following to the prompt: "Art style: Pokemon-style creature art, anime monster mascot design, extremely oversized sparkling eyes with large white catchlight highlights (eyes are the most prominent facial feature), super-deformed chibi proportions (large head, tiny body), thick bold black outlines, bright cel-shading, vivid saturated colors."
+6. NO Background Contradiction: Do NOT include any descriptions of environments, locations, floor textures, ground shadows, or environment lighting that could contradict the flat green background instruction.
 """
 
 def extract_skeleton(metadata_context: str, project_id: str, location: str = "us-central1") -> str:
@@ -85,7 +86,7 @@ def extract_partial_graph(chunk_context: str, skeleton_json: str, project_id: st
         "This chunk may contain code for MULTIPLE distinct microservices, or just a fragment of one service. "
         "Identify WHICH logical service(s) from the skeleton this code belongs to. "
         "Identify the source repository URL from the bracketed file prefixes (e.g. [https://github.com/...] in the file paths) for each service. "
-        "Extract the roles, scales, repository_url, and dependencies for ALL services found in this chunk. "
+        "Extract the roles, scales, scale_tier (integer rating from 1 to 5 based on code volume and responsibility), repository_url, and dependencies for ALL services found in this chunk. "
         "Design a character prompt representing each service found."
     )
     model = GenerativeModel("gemini-2.5-flash", system_instruction=[system_instruction])
@@ -114,6 +115,10 @@ Code Chunk Context:
                         "name": {"type": "STRING"},
                         "description": {"type": "STRING"},
                         "scale_and_complexity": {"type": "STRING"},
+                        "scale_tier": {
+                            "type": "INTEGER",
+                            "description": "Complexity and scale rating from 1 (very small/simple helper service) to 5 (critical high-scale core/gateway monolith)."
+                        },
                         "importance_and_centrality": {"type": "STRING"},
                         "role_type": {"type": "STRING"},
                         "repository_url": {"type": "STRING"},
@@ -130,7 +135,7 @@ Code Chunk Context:
                         },
                         "avatar_prompt": {"type": "STRING"}
                     },
-                    "required": ["name", "description", "scale_and_complexity", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt"]
+                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt"]
                 }
             }
         },
@@ -153,9 +158,9 @@ def synthesize_architecture(partial_graphs: list, project_id: str, location: str
     prompt = f"""You are a master system integrator.
 I have analyzed the codebase in arbitrary chunks and generated partial JSON profiles representing fragments of the ecosystem.
 Your task is to merge these PARTIAL GRAPHS into a single, unified Logical Architecture JSON.
-Crucially: DEDUPLICATE components. If 'cartservice' appears in 5 different chunks, merge its descriptions and dependencies into ONE single 'cartservice' object.
+Crucially: DEDUPLICATE components. If 'cartservice' appears in 5 different chunks, merge its descriptions, scale_tier (retaining the max or most representative tier), and dependencies into ONE single 'cartservice' object.
 Resolve any conflicting names, ensure dependencies refer to existing logical services, and output the final validated array.
-Ensure you retain and resolve the correct 'repository_url' for each merged microservice.
+Ensure you retain and resolve the correct 'repository_url' and 'scale_tier' for each merged microservice.
 
 {WORLD_SETTING}
 
@@ -173,6 +178,10 @@ Partial Analyses (from various chunks):
                         "name": {"type": "STRING"},
                         "description": {"type": "STRING"},
                         "scale_and_complexity": {"type": "STRING"},
+                        "scale_tier": {
+                            "type": "INTEGER",
+                            "description": "Complexity and scale rating from 1 (very small/simple helper service) to 5 (critical high-scale core/gateway monolith)."
+                        },
                         "importance_and_centrality": {"type": "STRING"},
                         "role_type": {"type": "STRING"},
                         "repository_url": {"type": "STRING"},
@@ -189,7 +198,7 @@ Partial Analyses (from various chunks):
                         },
                         "avatar_prompt": {"type": "STRING"}
                     },
-                    "required": ["name", "description", "scale_and_complexity", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt"]
+                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt"]
                 }
             }
         },

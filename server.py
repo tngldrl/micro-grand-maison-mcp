@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from scanner import scan_code_chunks, scan_metadata
 from analyzer import extract_skeleton, extract_partial_graph, synthesize_architecture, chat_with_character
 from generator import generate_avatar
+from PIL import Image
 
 load_dotenv()
 GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
@@ -28,6 +29,128 @@ class AnalyzeRequest(BaseModel):
     repo_urls: list[str]
     project_id: str
     callback_url: str
+
+def make_background_transparent(image_path: str):
+    """
+    Load an image, dynamically detect if the background is green-screen, black, or white,
+    and convert the background area to alpha transparency.
+    For green screens, global color keying is used to clear enclosed spaces (holes),
+    and boundary BFS is used for smooth edges.
+    For black/white screens, BFS is used to protect internal parts.
+    """
+    img = Image.open(image_path).convert("RGBA")
+    width, height = img.size
+    pixels = list(img.getdata())
+    
+    # 四隅のサンプリング
+    corners = [
+        pixels[0],
+        pixels[width - 1],
+        pixels[(height - 1) * width],
+        pixels[height * width - 1]
+    ]
+    
+    # 相対的色相による頑強な緑判定
+    green_corners = sum(1 for r, g, b, a in corners if g > r + 30 and g > b + 30 and g > 80)
+    dark_corners = sum(1 for r, g, b, a in corners if r < 60 and g < 60 and b < 60)
+    
+    new_pixels = []
+    
+    if green_corners >= 2:
+        background_pixels = set()
+        
+        # 1. 内側の孤立領域 (ホール) を消去するためのグローバル透過 (厳格判定)
+        for idx, (r, g, b, a) in enumerate(pixels):
+            if g > r + 40 and g > b + 40 and g > 90:
+                background_pixels.add((idx % width, idx // width))
+                
+        # 2. キャラクター外周のエッジやグラデーションを消去するための境界BFS (寛容判定)
+        visited = set()
+        queue = []
+        for x in range(width):
+            queue.append((x, 0))
+            queue.append((x, height - 1))
+        for y in range(1, height - 1):
+            queue.append((0, y))
+            queue.append((width - 1, y))
+            
+        while queue:
+            cx, cy = queue.pop(0)
+            if (cx, cy) in visited:
+                continue
+            visited.add((cx, cy))
+            
+            idx = cy * width + cx
+            r, g, b, a = pixels[idx]
+            
+            # 少し緩めの緑色優位度チェック
+            if g > r + 20 and g > b + 20 and g > 50:
+                background_pixels.add((cx, cy))
+                for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nx, ny = cx + dx, cy + dy
+                    if 0 <= nx < width and 0 <= ny < height:
+                        if (nx, ny) not in visited:
+                            queue.append((nx, ny))
+                            
+        # ピクセル書き換え
+        for y in range(height):
+            for x in range(width):
+                idx = y * width + x
+                r, g, b, a = pixels[idx]
+                if (x, y) in background_pixels:
+                    new_pixels.append((0, 0, 0, 0))
+                else:
+                    new_pixels.append((r, g, b, a))
+                    
+    else:
+        # 黒/白背景向け (下位互換性維持用のBFS境界探索)
+        is_dark_bg = dark_corners >= 2
+        visited = set()
+        queue = []
+        for x in range(width):
+            queue.append((x, 0))
+            queue.append((x, height - 1))
+        for y in range(1, height - 1):
+            queue.append((0, y))
+            queue.append((width - 1, y))
+            
+        background_pixels = set()
+        while queue:
+            cx, cy = queue.pop(0)
+            if (cx, cy) in visited:
+                continue
+            visited.add((cx, cy))
+            
+            idx = cy * width + cx
+            r, g, b, a = pixels[idx]
+            
+            should_remove = False
+            if is_dark_bg:
+                if r < 35 and g < 35 and b < 35:
+                    should_remove = True
+            else:
+                if r > 220 and g > 220 and b > 220:
+                    should_remove = True
+                    
+            if should_remove:
+                background_pixels.add((cx, cy))
+                for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nx, ny = cx + dx, cy + dy
+                    if 0 <= nx < width and 0 <= ny < height:
+                        if (nx, ny) not in visited:
+                            queue.append((nx, ny))
+                            
+        for y in range(height):
+            for x in range(width):
+                idx = y * width + x
+                r, g, b, a = pixels[idx]
+                if (x, y) in background_pixels:
+                    new_pixels.append((0, 0, 0, 0))
+                else:
+                    new_pixels.append((r, g, b, a))
+                    
+    img.putdata(new_pixels)
+    img.save(image_path, "PNG")
 
 def run_async_analysis(repo_urls: list[str], callback_url: str, project_id: str):
     cloned_dirs = []
@@ -82,6 +205,20 @@ def run_async_analysis(repo_urls: list[str], callback_url: str, project_id: str)
         
         # PHASE 4: Avatars
         microservices = data.get("microservices", [])
+
+        # Clean up stale avatar files from previous analyses of the same project.
+        # Only files prefixed with this project's safe_project_id are removed;
+        # other projects' files are left untouched.
+        safe_project_id = "".join([c for c in project_id if c.isalpha() or c.isdigit() or c=='-']).lower()
+        prefix = f"{safe_project_id}_"
+        for existing_file in os.listdir(output_dir):
+            if existing_file.startswith(prefix) and existing_file.endswith(".png"):
+                try:
+                    os.remove(os.path.join(output_dir, existing_file))
+                    print(f"Removed stale avatar: {existing_file}")
+                except Exception as rm_err:
+                    print(f"Could not remove stale avatar {existing_file}: {rm_err}")
+
         for ms in microservices:
             name = ms.get("name", "unknown")
             prompt = ms.get("avatar_prompt", "")
@@ -90,12 +227,17 @@ def run_async_analysis(repo_urls: list[str], callback_url: str, project_id: str)
                 continue
                 
             safe_name = "".join([c for c in name if c.isalpha() or c.isdigit() or c==' ']).rstrip().replace(" ", "_").lower()
-            image_filename = f"{safe_name}.png"
+            # Include project_id in the filename to avoid cross-project collisions
+            image_filename = f"{safe_project_id}_{safe_name}.png"
             image_path = os.path.join(output_dir, image_filename)
             
-            # Generate Avatar if not exists
-            if not os.path.exists(image_path):
-                generate_avatar(prompt, image_path, GCP_PROJECT_ID)
+            # Always regenerate to reflect the latest prompt (no skip-if-exists)
+            if generate_avatar(prompt, image_path, GCP_PROJECT_ID):
+                try:
+                    make_background_transparent(image_path)
+                    print(f"Successfully removed background from avatar for {name}")
+                except Exception as bg_err:
+                    print(f"Failed to remove background from avatar for {name}: {bg_err}")
             
             mcp_service_url = os.getenv("MCP_SERVICE_URL", "http://localhost:8001")
             ms["avatar_image_url"] = f"{mcp_service_url}/static/avatars/{image_filename}"
