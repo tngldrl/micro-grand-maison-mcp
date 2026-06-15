@@ -1,7 +1,34 @@
 import os
 import json
+import time
 import vertexai
 from vertexai.generative_models import GenerativeModel
+import google.api_core.exceptions
+
+def call_with_retry(func, *args, max_retries=5, initial_backoff=2, **kwargs):
+    """Call a Vertex AI function with exponential backoff on transient and 429 errors."""
+    backoff = initial_backoff
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except (google.api_core.exceptions.ResourceExhausted, google.api_core.exceptions.ServiceUnavailable, google.api_core.exceptions.GoogleAPICallError) as e:
+            print(f"[Attempt {attempt+1}/{max_retries}] Vertex AI transient error: {e}", flush=True)
+            if attempt == max_retries - 1:
+                raise e
+            print(f"Retrying in {backoff} seconds...", flush=True)
+            time.sleep(backoff)
+            backoff *= 2
+        except Exception as e:
+            err_str = str(e).lower()
+            if any(term in err_str for term in ["429", "quota", "exhausted", "rate limit", "overloaded"]):
+                print(f"[Attempt {attempt+1}/{max_retries}] Rate limit or resource exhausted: {e}", flush=True)
+                if attempt == max_retries - 1:
+                    raise e
+                print(f"Retrying in {backoff} seconds...", flush=True)
+                time.sleep(backoff)
+                backoff *= 2
+            else:
+                raise e
 
 WORLD_SETTING = """
 WORLD SETTING FOR AVATARS:
@@ -70,7 +97,8 @@ Context:
         "required": ["skeleton"]
     }
     
-    response = model.generate_content(
+    response = call_with_retry(
+        model.generate_content,
         prompt,
         generation_config={"temperature": 0.1, "response_mime_type": "application/json", "response_schema": schema}
     )
@@ -142,7 +170,8 @@ Code Chunk Context:
         "required": ["microservices"]
     }
     
-    response = model.generate_content(
+    response = call_with_retry(
+        model.generate_content,
         prompt,
         generation_config={"temperature": 0.2, "response_mime_type": "application/json", "response_schema": vertex_schema}
     )
@@ -162,6 +191,30 @@ Crucially: DEDUPLICATE components. If 'cartservice' appears in 5 different chunk
 Resolve any conflicting names, ensure dependencies refer to existing logical services, and output the final validated array.
 Ensure you retain and resolve the correct 'repository_url' and 'scale_tier' for each merged microservice.
 
+Also, you must select the most appropriate overall visual layout pattern for this microservices graph and output it in `layout_pattern`. You must select exactly ONE of the following 6 patterns, and for each microservice, fill the abstract logical attributes in `layout_metadata`.
+
+Available Layout Patterns:
+1. "hierarchical":
+   - Criteria: Use if there is a clear vertical or horizontal data flow/layers (e.g. gateway -> business logic -> database) and dependencies mostly flow in one direction.
+   - Nodes metadata: Set `rank` (integer hierarchical level, e.g. 0 for gateway/frontend, 1 for business logic, 2 for database) and `index_in_rank` (sequential order of nodes in the same rank layer, starting from 0).
+2. "radial":
+   - Criteria: Use if there is one centralized hub service (e.g. API Gateway, Message Broker, Event Bus) that mediates communications for all other peripheral services (spokes).
+   - Nodes metadata: For the central hub node, set `is_hub` to true. For all other spoke nodes, set `is_hub` to false and assign a unique sequential `spoke_index` (from 0 to N-1).
+3. "clustering":
+   - Criteria: Use if the graph naturally splits into multiple isolated or weakly connected sub-graphs/islands (e.g. distinct DDD bounded contexts or isolated domains).
+   - Nodes metadata: Set `cluster_id` (0-indexed integer identifying the cluster group) and `index_in_cluster` (unique sequential index within that cluster).
+4. "boundary":
+   - Criteria: Use if there are clear nested containers/groups represented in directory names, namespaces, or distinct structural boundaries (e.g., Kubernetes namespaces or VPC subnets).
+   - Nodes metadata: Set `boundary_id` (0-indexed integer identifying the boundary container) and `index_in_boundary` (unique sequential index inside the boundary).
+5. "mesh":
+   - Criteria: Use if the services are peer-to-peer or form a highly dense, mutually connected network without a clear single hub or simple rank layers.
+   - Nodes metadata: Set `index` (0-indexed unique sequential identifier for the nodes to lay them out in a large circle).
+6. "matrix":
+   - Criteria: Use if there are distinct columns and rows of service variations (e.g., Command services vs Query services, or Multi-Region service duplicates).
+   - Nodes metadata: Set `row` (0-indexed row number) and `col` (0-indexed column number) to line up in a grid.
+
+Make sure you output ALL the required properties for each node. If layout_metadata does not apply to a specific node, fill the relevant fields for the chosen layout_pattern anyway (leave the other fields blank/unset).
+
 {WORLD_SETTING}
 
 Partial Analyses (from various chunks):
@@ -170,6 +223,10 @@ Partial Analyses (from various chunks):
     vertex_schema = {
         "type": "OBJECT",
         "properties": {
+            "layout_pattern": {
+                "type": "STRING",
+                "description": "Selected visual layout pattern for the system. Must be one of: 'hierarchical', 'radial', 'clustering', 'boundary', 'mesh', 'matrix'."
+            },
             "microservices": {
                 "type": "ARRAY",
                 "items": {
@@ -196,16 +253,34 @@ Partial Analyses (from various chunks):
                                 "required": ["service_name", "description"]
                             }
                         },
-                        "avatar_prompt": {"type": "STRING"}
+                        "avatar_prompt": {"type": "STRING"},
+                        "layout_metadata": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "rank": {"type": "INTEGER", "description": "Hierarchical level, 0 for topmost (e.g. gateway/frontend). Required if layout_pattern is 'hierarchical'."},
+                                "index_in_rank": {"type": "INTEGER", "description": "Index within the same rank layer (0-indexed). Required if layout_pattern is 'hierarchical'."},
+                                "is_hub": {"type": "BOOLEAN", "description": "True if this service acts as a centralized broker or gateway. Required if layout_pattern is 'radial'."},
+                                "spoke_index": {"type": "INTEGER", "description": "Angle/spoke index for radial layout. Required if layout_pattern is 'radial'."},
+                                "cluster_id": {"type": "INTEGER", "description": "ID of the isolated island cluster. Required if layout_pattern is 'clustering'."},
+                                "index_in_cluster": {"type": "INTEGER", "description": "Index of the node inside its cluster. Required if layout_pattern is 'clustering'."},
+                                "boundary_id": {"type": "INTEGER", "description": "Boundary container ID (e.g. VPC, namespace). Required if layout_pattern is 'boundary'."},
+                                "index_in_boundary": {"type": "INTEGER", "description": "Index of the node inside its boundary. Required if layout_pattern is 'boundary'."},
+                                "index": {"type": "INTEGER", "description": "Simple sequential index for mesh/circular layouts. Required if layout_pattern is 'mesh'."},
+                                "row": {"type": "INTEGER", "description": "Row index for grid/matrix layouts. Required if layout_pattern is 'matrix'."},
+                                "col": {"type": "INTEGER", "description": "Column index for grid/matrix layouts. Required if layout_pattern is 'matrix'."}
+                            },
+                            "description": "Logical placement attributes for calculating 2D coordinates."
+                        }
                     },
-                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt"]
+                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt", "layout_metadata"]
                 }
             }
         },
-        "required": ["microservices"]
+        "required": ["layout_pattern", "microservices"]
     }
 
-    response = model.generate_content(
+    response = call_with_retry(
+        model.generate_content,
         prompt,
         generation_config={"temperature": 0.1, "response_mime_type": "application/json", "response_schema": vertex_schema}
     )
@@ -231,5 +306,5 @@ def chat_with_character(system_prompt: str, history: list, new_message: str, pro
         chat_history.append(Content(role=role, parts=[Part.from_text(content)]))
         
     chat_session = model.start_chat(history=chat_history)
-    response = chat_session.send_message(new_message)
+    response = call_with_retry(chat_session.send_message, new_message)
     return response.text

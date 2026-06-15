@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from scanner import scan_code_chunks, scan_metadata
 from analyzer import extract_skeleton, extract_partial_graph, synthesize_architecture, chat_with_character
 from generator import generate_avatar
+import math
 from PIL import Image
 
 load_dotenv()
@@ -29,6 +30,143 @@ class AnalyzeRequest(BaseModel):
     repo_urls: list[str]
     project_id: str
     callback_url: str
+
+def calculate_layout_coordinates(data: dict) -> dict:
+    """
+    Given the integrated architecture data dictionary containing "layout_pattern"
+    and a list of "microservices" (each having a "layout_metadata" dict),
+    calculate the 2D pixel coordinates (x, y) for each microservice and store it
+    in the microservice's "position" property as {"x": x, "y": y}.
+    """
+    layout_pattern = data.get("layout_pattern", "mesh")
+    microservices = data.get("microservices", [])
+    if not microservices:
+        return data
+
+    # Safe fallback layout if metadata is missing or calculations error out
+    def apply_fallback_layout():
+        for i, ms in enumerate(microservices):
+            ms["position"] = {
+                "x": float(100 + (i * 250)),
+                "y": float(100 + ((i % 2) * 200))
+            }
+
+    try:
+        if layout_pattern == "hierarchical":
+            # Group by rank
+            ranks = {}
+            for ms in microservices:
+                meta = ms.get("layout_metadata") or {}
+                rank = meta.get("rank")
+                if rank is None:
+                    rank = 0
+                ranks.setdefault(rank, []).append(ms)
+
+            for rank, ms_list in ranks.items():
+                ms_list.sort(key=lambda x: (x.get("layout_metadata") or {}).get("index_in_rank", 0) or 0)
+                count = len(ms_list)
+                for idx, ms in enumerate(ms_list):
+                    ms["position"] = {
+                        "x": float(400 + (idx - (count - 1) / 2.0) * 350),
+                        "y": float(100 + rank * 300)
+                    }
+
+        elif layout_pattern == "radial":
+            # Find hub
+            hubs = [ms for ms in microservices if (ms.get("layout_metadata") or {}).get("is_hub") is True]
+            hub = hubs[0] if hubs else None
+            
+            # Spokes
+            spokes = [ms for ms in microservices if ms != hub]
+            spokes.sort(key=lambda x: (x.get("layout_metadata") or {}).get("spoke_index", 0) or 0)
+            
+            if hub:
+                hub["position"] = {"x": 500.0, "y": 500.0}
+            
+            N = len(spokes)
+            for i, ms in enumerate(spokes):
+                angle = (2.0 * math.pi * i) / N if N > 0 else 0
+                ms["position"] = {
+                    "x": float(500.0 + 400.0 * math.cos(angle)),
+                    "y": float(500.0 + 400.0 * math.sin(angle))
+                }
+                
+        elif layout_pattern == "clustering":
+            # Group by cluster_id
+            clusters = {}
+            for ms in microservices:
+                meta = ms.get("layout_metadata") or {}
+                c_id = meta.get("cluster_id", 0) or 0
+                clusters.setdefault(c_id, []).append(ms)
+
+            # Map cluster_id to a center coordinate
+            cluster_centers = {
+                0: (300.0, 300.0),
+                1: (1000.0, 300.0),
+                2: (600.0, 950.0),
+                3: (1300.0, 950.0)
+            }
+            
+            for c_id, ms_list in clusters.items():
+                center_x, center_y = cluster_centers.get(c_id, (300.0 + c_id * 500.0, 300.0))
+                ms_list.sort(key=lambda x: (x.get("layout_metadata") or {}).get("index_in_cluster", 0) or 0)
+                M = len(ms_list)
+                for j, ms in enumerate(ms_list):
+                    angle = (2.0 * math.pi * j) / M if M > 0 else 0
+                    ms["position"] = {
+                        "x": float(center_x + 180.0 * math.cos(angle)),
+                        "y": float(center_y + 180.0 * math.sin(angle))
+                    }
+
+        elif layout_pattern == "boundary":
+            # Group by boundary_id
+            boundaries = {}
+            for ms in microservices:
+                meta = ms.get("layout_metadata") or {}
+                b_id = meta.get("boundary_id", 0) or 0
+                boundaries.setdefault(b_id, []).append(ms)
+
+            # Map boundary_id to start coordinates side-by-side
+            for b_id, ms_list in boundaries.items():
+                start_x = 100.0 + b_id * 700.0
+                start_y = 100.0
+                ms_list.sort(key=lambda x: (x.get("layout_metadata") or {}).get("index_in_boundary", 0) or 0)
+                for idx, ms in enumerate(ms_list):
+                    row = idx // 2
+                    col = idx % 2
+                    ms["position"] = {
+                        "x": float(start_x + col * 300.0),
+                        "y": float(start_y + row * 300.0)
+                    }
+
+        elif layout_pattern == "mesh":
+            # Circular layout
+            microservices_sorted = sorted(microservices, key=lambda x: (x.get("layout_metadata") or {}).get("index", 0) or 0)
+            N = len(microservices_sorted)
+            for i, ms in enumerate(microservices_sorted):
+                angle = (2.0 * math.pi * i) / N if N > 0 else 0
+                ms["position"] = {
+                    "x": float(500.0 + 400.0 * math.cos(angle)),
+                    "y": float(500.0 + 400.0 * math.sin(angle))
+                }
+
+        elif layout_pattern == "matrix":
+            for ms in microservices:
+                meta = ms.get("layout_metadata") or {}
+                row = meta.get("row", 0) or 0
+                col = meta.get("col", 0) or 0
+                ms["position"] = {
+                    "x": float(100.0 + col * 400.0),
+                    "y": float(100.0 + row * 300.0)
+                }
+        else:
+            apply_fallback_layout()
+
+    except Exception as err:
+        print(f"Error calculating coordinates for layout {layout_pattern}: {err}. Applying fallback.")
+        apply_fallback_layout()
+
+    return data
 
 def make_background_transparent(image_path: str):
     """
@@ -202,6 +340,7 @@ def run_async_analysis(repo_urls: list[str], callback_url: str, project_id: str)
         # PHASE 3
         final_architecture_json = synthesize_architecture(partial_graphs, GCP_PROJECT_ID)
         data = json.loads(final_architecture_json)
+        data = calculate_layout_coordinates(data)
         
         # PHASE 4: Avatars
         microservices = data.get("microservices", [])
