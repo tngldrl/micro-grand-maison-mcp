@@ -115,7 +115,8 @@ def extract_partial_graph(chunk_context: str, skeleton_json: str, project_id: st
         "Identify WHICH logical service(s) from the skeleton this code belongs to. "
         "Identify the source repository URL from the bracketed file prefixes (e.g. [https://github.com/...] in the file paths) for each service. "
         "Extract the roles, scales, scale_tier (integer rating from 1 to 5 based on code volume and responsibility), repository_url, and dependencies for ALL services found in this chunk. "
-        "Design a character prompt representing each service found."
+        "Design a character prompt representing each service found. "
+        "Additionally, identify the most important source files for each service to serve as exploration anchors during future chat sessions."
     )
     model = GenerativeModel("gemini-2.5-flash", system_instruction=[system_instruction])
     
@@ -127,6 +128,25 @@ Extract the partial microservice profiles for EVERY service you identify in this
 Ensure you set the 'repository_url' for each microservice matching the repository URL found in the file path brackets (e.g., [https://github.com/owner/repo.git]).
 
 {WORLD_SETTING}
+
+For the 'key_files' field, identify up to 10 source files that are the best entry points
+for understanding this service during a chat session. Rules:
+1. ALWAYS include files for these two perspectives (if present in the code chunk):
+   - 'core_business_logic': The primary file(s) implementing this service's core functionality
+   - 'configuration': Environment variables, config files, or settings (e.g., .env.example, config.py, application.yml)
+2. In addition, based on the SPECIFIC CHARACTERISTICS of this service, determine up to 8 more
+   perspectives that are uniquely relevant. Examples (use only what applies):
+   - 'api_contracts' for services with REST/gRPC interfaces
+   - 'data_schema' for services with DB models or migrations
+   - 'routing_rules' for gateways or routers
+   - 'event_handlers' for async/event-driven services
+   - 'client_definitions' for services that call external APIs
+   - 'authentication_strategy' for auth services
+   - 'migration_files' for database services
+   - 'test_coverage' for services with test suites that reveal expected behavior
+3. CRITICAL: Only use file paths that ACTUALLY APPEAR in the provided code chunk.
+   Do NOT guess or invent file paths.
+4. Use relative paths from the repository root (strip the bracketed repo URL prefix).
 
 Code Chunk Context:
 {chunk_context}
@@ -161,9 +181,31 @@ Code Chunk Context:
                                 "required": ["service_name", "description"]
                             }
                         },
-                        "avatar_prompt": {"type": "STRING"}
+                        "avatar_prompt": {"type": "STRING"},
+                        "key_files": {
+                            "type": "ARRAY",
+                            "description": "Key source files for this service, used as exploration anchors during chat. Max 10 entries.",
+                            "items": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "path": {
+                                        "type": "STRING",
+                                        "description": "Relative file path from repository root. Must be a path that actually exists in the provided code chunk."
+                                    },
+                                    "perspective": {
+                                        "type": "STRING",
+                                        "description": "The aspect of the service this file represents (e.g., 'core_business_logic', 'configuration', 'api_contracts', 'data_schema', 'routing_rules', etc.)"
+                                    },
+                                    "reason": {
+                                        "type": "STRING",
+                                        "description": "Brief explanation of why this file is important for understanding this service."
+                                    }
+                                },
+                                "required": ["path", "perspective", "reason"]
+                            }
+                        }
                     },
-                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt"]
+                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt", "key_files"]
                 }
             }
         },
@@ -187,9 +229,9 @@ def synthesize_architecture(partial_graphs: list, project_id: str, location: str
     prompt = f"""You are a master system integrator.
 I have analyzed the codebase in arbitrary chunks and generated partial JSON profiles representing fragments of the ecosystem.
 Your task is to merge these PARTIAL GRAPHS into a single, unified Logical Architecture JSON.
-Crucially: DEDUPLICATE components. If 'cartservice' appears in 5 different chunks, merge its descriptions, scale_tier (retaining the max or most representative tier), and dependencies into ONE single 'cartservice' object.
+Crucially: DEDUPLICATE components. If 'cartservice' appears in 5 different chunks, merge its descriptions, scale_tier (retaining the max or most representative tier), key_files (combining unique paths across chunks, preserving perspectives and reasons, up to 10 total items), and dependencies into ONE single 'cartservice' object.
 Resolve any conflicting names, ensure dependencies refer to existing logical services, and output the final validated array.
-Ensure you retain and resolve the correct 'repository_url' and 'scale_tier' for each merged microservice.
+Ensure you retain and resolve the correct 'repository_url', 'scale_tier', and 'key_files' for each merged microservice.
 
 Also, you must select the most appropriate overall visual layout pattern for this microservices graph and output it in `layout_pattern`. You must select exactly ONE of the following 6 patterns, and for each microservice, fill the abstract logical attributes in `layout_metadata`.
 
@@ -254,6 +296,28 @@ Partial Analyses (from various chunks):
                             }
                         },
                         "avatar_prompt": {"type": "STRING"},
+                        "key_files": {
+                            "type": "ARRAY",
+                            "description": "Key source files for this service, used as exploration anchors during chat. Max 10 entries.",
+                            "items": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "path": {
+                                        "type": "STRING",
+                                        "description": "Relative file path from repository root."
+                                    },
+                                    "perspective": {
+                                        "type": "STRING",
+                                        "description": "The aspect of the service this file represents (e.g., 'core_business_logic', 'configuration', 'api_contracts', 'data_schema', etc.)"
+                                    },
+                                    "reason": {
+                                        "type": "STRING",
+                                        "description": "Brief explanation of why this file is important."
+                                    }
+                                },
+                                "required": ["path", "perspective", "reason"]
+                            }
+                        },
                         "layout_metadata": {
                             "type": "OBJECT",
                             "properties": {
@@ -272,7 +336,7 @@ Partial Analyses (from various chunks):
                             "description": "Logical placement attributes for calculating 2D coordinates."
                         }
                     },
-                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt", "layout_metadata"]
+                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt", "layout_metadata", "key_files"]
                 }
             }
         },

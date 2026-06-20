@@ -8,6 +8,7 @@ import subprocess
 import shutil
 import httpx
 from dotenv import load_dotenv
+from typing import Optional
 
 from scanner import scan_code_chunks, scan_metadata
 from analyzer import extract_skeleton, extract_partial_graph, synthesize_architecture, chat_with_character
@@ -30,6 +31,7 @@ class AnalyzeRequest(BaseModel):
     repo_urls: list[str]
     project_id: str
     callback_url: str
+    github_installation_access_token: Optional[str] = None
 
 def calculate_layout_coordinates(data: dict) -> dict:
     """
@@ -290,7 +292,12 @@ def make_background_transparent(image_path: str):
     img.putdata(new_pixels)
     img.save(image_path, "PNG")
 
-def run_async_analysis(repo_urls: list[str], callback_url: str, project_id: str):
+def run_async_analysis(
+    repo_urls: list[str],
+    callback_url: str,
+    project_id: str,
+    github_installation_access_token: Optional[str] = None,
+):
     cloned_dirs = []
     repo_configs = []
     
@@ -301,19 +308,32 @@ def run_async_analysis(repo_urls: list[str], callback_url: str, project_id: str)
             if not url_str:
                 continue
                 
+            # Build authenticated clone URL if token is provided
+            clone_url = url_str
+            if github_installation_access_token:
+                import re
+                # Normalize to HTTPS
+                normalized = re.sub(r"^git@github\.com:", "https://github.com/", url_str)
+                normalized = normalized if normalized.endswith(".git") else normalized + ".git"
+                clone_url = normalized.replace("https://", f"https://x-access-token:{github_installation_access_token}@")
+
             temp_dir = tempfile.mkdtemp(prefix="repo-")
             cloned_dirs.append(temp_dir)
             
             # Run git clone --depth 1
             print(f"Cloning {url_str} to {temp_dir}...")
             result = subprocess.run(
-                ["git", "clone", "--depth", "1", url_str, temp_dir],
+                ["git", "clone", "--depth", "1", clone_url, temp_dir],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
             )
             if result.returncode != 0:
-                raise Exception(f"Failed to clone repository {url_str}: {result.stderr}")
+                # Mask token in error message if present
+                err_msg = result.stderr
+                if github_installation_access_token:
+                    err_msg = err_msg.replace(github_installation_access_token, "********")
+                raise Exception(f"Failed to clone repository {url_str}: {err_msg}")
                 
             repo_configs.append((temp_dir, url_str))
             
@@ -423,7 +443,8 @@ def analyze(req: AnalyzeRequest, background_tasks: BackgroundTasks):
         run_async_analysis,
         req.repo_urls,
         req.callback_url,
-        req.project_id
+        req.project_id,
+        req.github_installation_access_token,
     )
     return {"status": "queued"}
 
