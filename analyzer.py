@@ -5,6 +5,8 @@ import vertexai
 from vertexai.generative_models import GenerativeModel
 import google.api_core.exceptions
 
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
 def call_with_retry(func, *args, max_retries=5, initial_backoff=2, **kwargs):
     """Call a Vertex AI function with exponential backoff on transient and 429 errors."""
     backoff = initial_backoff
@@ -67,7 +69,7 @@ CRITICAL VISUAL CONSTRAINTS for `avatar_prompt` (Integrate these strictly in Eng
 def extract_skeleton(metadata_context: str, project_id: str, location: str = "us-central1") -> str:
     """Phase 1: Extract the skeleton from metadata files."""
     vertexai.init(project=project_id, location=location)
-    model = GenerativeModel("gemini-2.5-flash")
+    model = GenerativeModel(GEMINI_MODEL)
     
     prompt = f"""You are an expert software architect.
 Analyze the following metadata and configuration files from multiple repositories.
@@ -118,7 +120,7 @@ def extract_partial_graph(chunk_context: str, skeleton_json: str, project_id: st
         "Design a character prompt representing each service found. "
         "Additionally, identify the most important source files for each service to serve as exploration anchors during future chat sessions."
     )
-    model = GenerativeModel("gemini-2.5-flash", system_instruction=[system_instruction])
+    model = GenerativeModel(GEMINI_MODEL, system_instruction=[system_instruction])
     
     prompt = f"""Overall Ecosystem Skeleton:
 {skeleton_json}
@@ -221,8 +223,43 @@ Code Chunk Context:
 
 def synthesize_architecture(partial_graphs: list, project_id: str, location: str = "us-central1") -> str:
     """Phase 3: Combine all partial graphs into a final, consistent architecture."""
+    # -----------------------------------------------------------------------
+    # Deterministic Data Backup (Post-processing Guardrails)
+    # Back up the original, detailed avatar_prompt, role_type and unique key_files
+    # from the partial graphs to prevent LLM from losing or shortening them.
+    # -----------------------------------------------------------------------
+    backup_prompts = {}
+    backup_key_files = {}
+    
+    for pg_str in partial_graphs:
+        try:
+            pg_data = json.loads(pg_str)
+            for ms in pg_data.get("microservices", []):
+                ms_name = ms.get("name")
+                if not ms_name:
+                    continue
+                
+                # Keep the longest (most detailed) avatar prompt
+                role_type = ms.get("role_type")
+                avatar_prompt = ms.get("avatar_prompt")
+                if avatar_prompt:
+                    current_best = backup_prompts.get(ms_name)
+                    if not current_best or len(avatar_prompt) > len(current_best[1]):
+                        backup_prompts[ms_name] = (role_type, avatar_prompt)
+                
+                # Gather unique key_files
+                kfs = ms.get("key_files", [])
+                if kfs:
+                    existing_kfs = backup_key_files.setdefault(ms_name, {})
+                    for kf in kfs:
+                        path = kf.get("path")
+                        if path and path not in existing_kfs:
+                            existing_kfs[path] = kf
+        except Exception as parse_err:
+            print(f"Warning: Failed to parse partial graph JSON for backup: {parse_err}")
+
     vertexai.init(project=project_id, location=location)
-    model = GenerativeModel("gemini-2.5-flash")
+    model = GenerativeModel(GEMINI_MODEL)
     
     combined_json_str = "\n---\n".join(partial_graphs)
     
@@ -231,7 +268,7 @@ I have analyzed the codebase in arbitrary chunks and generated partial JSON prof
 Your task is to merge these PARTIAL GRAPHS into a single, unified Logical Architecture JSON.
 Crucially: DEDUPLICATE components. If 'cartservice' appears in 5 different chunks, merge its descriptions, scale_tier (retaining the max or most representative tier), key_files (combining unique paths across chunks, preserving perspectives and reasons, up to 10 total items), and dependencies into ONE single 'cartservice' object.
 Resolve any conflicting names, ensure dependencies refer to existing logical services, and output the final validated array.
-Ensure you retain and resolve the correct 'repository_url', 'scale_tier', and 'key_files' for each merged microservice.
+Ensure you retain and resolve the correct 'repository_url', 'scale_tier', 'key_files', 'role_type', and 'avatar_prompt' (ensuring the detailed creative prompt is preserved or synthesized) for each merged microservice.
 
 Also, you must select the most appropriate overall visual layout pattern for this microservices graph and output it in `layout_pattern`. You must select exactly ONE of the following 6 patterns, and for each microservice, fill the abstract logical attributes in `layout_metadata`.
 
@@ -293,7 +330,7 @@ Partial Analyses (from various chunks):
                                     "description": {"type": "STRING"}
                                 },
                                 "required": ["service_name", "description"]
-                            }
+                             }
                         },
                         "avatar_prompt": {"type": "STRING"},
                         "key_files": {
@@ -342,12 +379,65 @@ Partial Analyses (from various chunks):
         },
         "required": ["layout_pattern", "microservices"]
     }
-
+    
     response = call_with_retry(
         model.generate_content,
         prompt,
         generation_config={"temperature": 0.1, "response_mime_type": "application/json", "response_schema": vertex_schema}
     )
+    
+    # -----------------------------------------------------------------------
+    # Deterministic Data Restoration (Post-processing Guardrails)
+    # Recover any avatar_prompt, role_type, or key_files that were dropped or
+    # severely shortened during the LLM synthesis phase.
+    # -----------------------------------------------------------------------
+    try:
+        final_data = json.loads(response.text)
+        modified = False
+        
+        for ms in final_data.get("microservices", []):
+            ms_name = ms.get("name")
+            if not ms_name:
+                continue
+                
+            # Restore avatar prompt if it's missing or significantly shortened (< 70% of original)
+            backup = backup_prompts.get(ms_name)
+            if backup:
+                role_type, avatar_prompt = backup
+                current_prompt = ms.get("avatar_prompt", "")
+                if not current_prompt or len(current_prompt) < len(avatar_prompt) * 0.7:
+                    ms["avatar_prompt"] = avatar_prompt
+                    if role_type and not ms.get("role_type"):
+                        ms["role_type"] = role_type
+                    modified = True
+                    print(f"Deterministic recovery: Restored original avatar_prompt for microservice '{ms_name}'")
+            
+            # Deterministically merge missing key_files back (up to 10 max)
+            backup_kfs = backup_key_files.get(ms_name)
+            if backup_kfs:
+                current_kfs = ms.get("key_files", [])
+                current_paths = {kf.get("path") for kf in current_kfs if kf.get("path")}
+                
+                added = False
+                for path, kf_obj in backup_kfs.items():
+                    if len(current_kfs) >= 10:
+                        break
+                    if path not in current_paths:
+                        current_kfs.append(kf_obj)
+                        current_paths.add(path)
+                        added = True
+                        
+                if added:
+                    ms["key_files"] = current_kfs
+                    modified = True
+                    print(f"Deterministic recovery: Merged missing key_files for '{ms_name}'")
+                    
+        if modified:
+            return json.dumps(final_data)
+            
+    except Exception as recovery_err:
+        print(f"Warning: Failed during deterministic recovery post-processing: {recovery_err}")
+
     return response.text
 
 from vertexai.generative_models import Content, Part
@@ -357,7 +447,7 @@ def chat_with_character(system_prompt: str, history: list, new_message: str, pro
     vertexai.init(project=project_id, location=location)
     
     # Configure the persona
-    model = GenerativeModel("gemini-2.5-flash", system_instruction=[system_prompt])
+    model = GenerativeModel(GEMINI_MODEL, system_instruction=[system_prompt])
     
     # Reconstruct history
     chat_history = []
