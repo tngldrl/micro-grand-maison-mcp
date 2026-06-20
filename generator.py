@@ -9,8 +9,8 @@ def generate_avatar(prompt: str, output_path: str, project_id: str, location: st
     """
     vertexai.init(project=project_id, location=location)
     
-    max_retries = 3
-    base_delay = 5
+    max_retries = 5
+    base_delay = 20
     
     for attempt in range(max_retries):
         try:
