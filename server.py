@@ -292,6 +292,20 @@ def make_background_transparent(image_path: str):
     img.putdata(new_pixels)
     img.save(image_path, "PNG")
 
+def upload_to_gcs(local_path: str, bucket_name: str, destination_blob_name: str) -> bool:
+    """Uploads a file to the GCS bucket."""
+    try:
+        from google.cloud import storage
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(destination_blob_name)
+        blob.upload_from_filename(local_path)
+        print(f"File {local_path} uploaded to bucket {bucket_name} as {destination_blob_name}")
+        return True
+    except Exception as e:
+        print(f"Failed to upload {local_path} to GCS: {e}")
+        return False
+
 def run_async_analysis(
     repo_urls: list[str],
     callback_url: str,
@@ -398,8 +412,17 @@ def run_async_analysis(
                 except Exception as bg_err:
                     print(f"Failed to remove background from avatar for {name}: {bg_err}")
             
-            mcp_service_url = os.getenv("MCP_SERVICE_URL", "http://localhost:8001")
-            ms["avatar_image_url"] = f"{mcp_service_url}/static/avatars/{image_filename}"
+            # Upload to GCS if GCP_PROJECT_ID is configured
+            bucket_name = f"{GCP_PROJECT_ID}-avatars" if GCP_PROJECT_ID else None
+            uploaded = False
+            if bucket_name:
+                uploaded = upload_to_gcs(image_path, bucket_name, image_filename)
+                
+            if uploaded:
+                ms["avatar_image_url"] = f"https://storage.googleapis.com/{bucket_name}/{image_filename}"
+            else:
+                mcp_service_url = os.getenv("MCP_SERVICE_URL", "http://localhost:8001")
+                ms["avatar_image_url"] = f"{mcp_service_url}/static/avatars/{image_filename}"
             
         # Send callback with success status
         callback_payload = {
