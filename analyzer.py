@@ -73,7 +73,13 @@ def extract_skeleton(metadata_context: str, project_id: str, location: str = "us
     
     prompt = f"""You are an expert software architect.
 Analyze the following metadata and configuration files from multiple repositories.
-Identify the microservices, their primary technologies, and any explicit network or infrastructural dependencies.
+Identify the internal, custom microservices and applications.
+
+CRITICAL INSTRUCTIONS FOR MICROSERVICE IDENTIFICATION:
+1. Do NOT extract generic, off-the-shelf public technologies, databases, external APIs, or managed services (such as PostgreSQL, Firebase, GitHub API, Redis, AWS S3, etc.) as standalone microservice components under their generic names.
+2. If a repository is dedicated to deploying, wrapping, or managing a database or infrastructure component, deduce an architecturally meaningful, custom logical name for it (e.g., "Restaurant Inventory Database" instead of "PostgreSQL") using the repository name, path, README, or structure.
+3. If a generic technology is merely utilized/accessed by a custom microservice, it should be listed in the 'technology_stack' of the utilizing microservice, rather than being drawn as a separate component node.
+
 Output a JSON array of basic service objects containing 'name', 'technology_stack', and 'basic_role'.
 Do NOT extract detailed API logic, just the skeleton.
 
@@ -118,7 +124,8 @@ def extract_partial_graph(chunk_context: str, skeleton_json: str, project_id: st
         "Identify the source repository URL from the bracketed file prefixes (e.g. [https://github.com/...] in the file paths) for each service. "
         "Extract the roles, scales, scale_tier (integer rating from 1 to 5 based on code volume and responsibility), repository_url, and dependencies for ALL services found in this chunk. "
         "Design a character prompt representing each service found. "
-        "Additionally, identify the most important source files for each service to serve as exploration anchors during future chat sessions."
+        "Additionally, identify the most important source files for each service to serve as exploration anchors during future chat sessions. "
+        "Specifically, identify the representative technologies used by each service."
     )
     model = GenerativeModel(GEMINI_MODEL, system_instruction=[system_instruction])
     
@@ -128,6 +135,11 @@ def extract_partial_graph(chunk_context: str, skeleton_json: str, project_id: st
 Now, analyze the following arbitrary chunk of source code from the ecosystem.
 Extract the partial microservice profiles for EVERY service you identify in this chunk.
 Ensure you set the 'repository_url' for each microservice matching the repository URL found in the file path brackets (e.g., [https://github.com/owner/repo.git]).
+
+CRITICAL INSTRUCTIONS FOR MICROSERVICE IDENTIFICATION:
+1. Do NOT extract generic, off-the-shelf public technologies, databases, external APIs, or managed services (such as PostgreSQL, Firebase, GitHub API, Redis, AWS S3, etc.) as standalone microservice components under their generic names.
+2. If a repository is dedicated to deploying, wrapping, or managing a database or infrastructure component, deduce an architecturally meaningful, custom logical name for it (e.g., "Restaurant Inventory Database" instead of "PostgreSQL") using the repository name, path, README, or structure.
+3. If a generic technology is merely utilized/accessed by a custom microservice, it should be listed in the 'technologies' array of the utilizing microservice, rather than being drawn as a separate component node.
 
 {WORLD_SETTING}
 
@@ -184,6 +196,11 @@ Code Chunk Context:
                             }
                         },
                         "avatar_prompt": {"type": "STRING"},
+                        "technologies": {
+                            "type": "ARRAY",
+                            "items": {"type": "STRING"},
+                            "description": "List of representative technologies, databases, frameworks, languages, or external APIs utilized by this microservice (e.g. PostgreSQL, FastAPI, Python, Firebase, GitHub API). Max 10 entries."
+                        },
                         "key_files": {
                             "type": "ARRAY",
                             "description": "Key source files for this service, used as exploration anchors during chat. Max 10 entries.",
@@ -207,7 +224,7 @@ Code Chunk Context:
                             }
                         }
                     },
-                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt", "key_files"]
+                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt", "key_files", "technologies"]
                 }
             }
         },
@@ -230,6 +247,7 @@ def synthesize_architecture(partial_graphs: list, project_id: str, location: str
     # -----------------------------------------------------------------------
     backup_prompts = {}
     backup_key_files = {}
+    backup_technologies = {}
     
     for pg_str in partial_graphs:
         try:
@@ -255,6 +273,14 @@ def synthesize_architecture(partial_graphs: list, project_id: str, location: str
                         path = kf.get("path")
                         if path and path not in existing_kfs:
                             existing_kfs[path] = kf
+
+                # Gather unique technologies
+                techs = ms.get("technologies", [])
+                if techs:
+                    existing_techs = backup_technologies.setdefault(ms_name, set())
+                    for t in techs:
+                        if t:
+                            existing_techs.add(t)
         except Exception as parse_err:
             print(f"Warning: Failed to parse partial graph JSON for backup: {parse_err}")
 
@@ -266,9 +292,9 @@ def synthesize_architecture(partial_graphs: list, project_id: str, location: str
     prompt = f"""You are a master system integrator.
 I have analyzed the codebase in arbitrary chunks and generated partial JSON profiles representing fragments of the ecosystem.
 Your task is to merge these PARTIAL GRAPHS into a single, unified Logical Architecture JSON.
-Crucially: DEDUPLICATE components. If 'cartservice' appears in 5 different chunks, merge its descriptions, scale_tier (retaining the max or most representative tier), key_files (combining unique paths across chunks, preserving perspectives and reasons, up to 10 total items), and dependencies into ONE single 'cartservice' object.
+Crucially: DEDUPLICATE components. If 'cartservice' appears in 5 different chunks, merge its descriptions, scale_tier (retaining the max or most representative tier), key_files (combining unique paths across chunks, preserving perspectives and reasons, up to 10 total items), technologies (combining all unique technologies across chunks, preserving original technology names, up to 10 items total), and dependencies into ONE single 'cartservice' object.
 Resolve any conflicting names, ensure dependencies refer to existing logical services, and output the final validated array.
-Ensure you retain and resolve the correct 'repository_url', 'scale_tier', 'key_files', 'role_type', and 'avatar_prompt' (ensuring the detailed creative prompt is preserved or synthesized) for each merged microservice.
+Ensure you retain and resolve the correct 'repository_url', 'scale_tier', 'key_files', 'role_type', 'technologies', and 'avatar_prompt' (ensuring the detailed creative prompt is preserved or synthesized) for each merged microservice.
 
 Also, you must select the most appropriate overall visual layout pattern for this microservices graph and output it in `layout_pattern`. You must select exactly ONE of the following 6 patterns, and for each microservice, fill the abstract logical attributes in `layout_metadata`.
 
@@ -355,6 +381,11 @@ Partial Analyses (from various chunks):
                                 "required": ["path", "perspective", "reason"]
                             }
                         },
+                        "technologies": {
+                            "type": "ARRAY",
+                            "description": "List of representative technologies, databases, frameworks, languages, or external APIs utilized by this microservice. Max 10 entries.",
+                            "items": {"type": "STRING"}
+                        },
                         "layout_metadata": {
                             "type": "OBJECT",
                             "properties": {
@@ -373,7 +404,7 @@ Partial Analyses (from various chunks):
                             "description": "Logical placement attributes for calculating 2D coordinates."
                         }
                     },
-                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt", "layout_metadata", "key_files"]
+                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt", "layout_metadata", "key_files", "technologies"]
                 }
             }
         },
@@ -431,6 +462,26 @@ Partial Analyses (from various chunks):
                     ms["key_files"] = current_kfs
                     modified = True
                     print(f"Deterministic recovery: Merged missing key_files for '{ms_name}'")
+
+            # Deterministically merge technologies back (up to 10 max)
+            backup_techs = backup_technologies.get(ms_name)
+            if backup_techs:
+                current_techs = ms.get("technologies", [])
+                current_tech_lower = {t.lower() for t in current_techs}
+                
+                added_tech = False
+                for t in backup_techs:
+                    if len(current_techs) >= 10:
+                        break
+                    if t.lower() not in current_tech_lower:
+                        current_techs.append(t)
+                        current_tech_lower.add(t.lower())
+                        added_tech = True
+                
+                if added_tech:
+                    ms["technologies"] = current_techs
+                    modified = True
+                    print(f"Deterministic recovery: Merged technologies for '{ms_name}'")
                     
         if modified:
             return json.dumps(final_data)
