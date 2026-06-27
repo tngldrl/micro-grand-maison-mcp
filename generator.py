@@ -3,51 +3,77 @@ import time
 import vertexai
 from vertexai.preview.vision_models import ImageGenerationModel
 
-def generate_avatar(prompt: str, output_path: str, project_id: str, location: str = "us-central1") -> bool:
+def generate_avatar(prompt: str, output_path: str, project_id: str, locations: list[str] = None) -> bool:
     """
     Generate an avatar image using Vertex AI Imagen 3 and save it to the local disk.
+    Supports a list of target locations with automatic fallback in case of transient quota errors.
     """
-    vertexai.init(project=project_id, location=location)
+    if locations is None:
+        locations = ["us-central1", "global"]
+        
+    max_retries = 3
+    base_delay = 5
     
-    max_retries = 5
-    base_delay = 10
-    
-    for attempt in range(max_retries):
+    for loc_idx, location in enumerate(locations):
+        print(f"Initializing Vertex AI at location: {location} (Attempting {loc_idx + 1}/{len(locations)})")
         try:
-            # Use the latest Imagen 3 model (adjust version string as available in the GCP project)
-            model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-002")
-            
-            print(f"Generating image for prompt: {prompt}")
-            
-            # In Phase 1, we save locally. In Phase 3, this will upload to Google Cloud Storage.
-            response = model.generate_images(
-                prompt=prompt,
-                number_of_images=1,
-                aspect_ratio="1:1",
-                # We want high quality, clear background
-                negative_prompt="photorealistic, photography, realistic, 3d render, complex background, scenery, environment, landscape, room, messy, low resolution, ugly, disfigured, text, words",
-                guidance_scale=7.5
-            )
-            
-            if response.images:
-                image = response.images[0]
-                image.save(output_path)
-                print(f"Successfully saved image to {output_path}")
-                return True
-            else:
-                print("No image was returned from the model.")
-                return False
-                
-        except Exception as e:
-            if "429" in str(e) or "Quota" in str(e):
-                if attempt < max_retries - 1:
-                    sleep_time = base_delay * (2 ** attempt)
-                    print(f"[429 Quota Exceeded] Retrying in {sleep_time} seconds... (Attempt {attempt+1}/{max_retries})")
-                    time.sleep(sleep_time)
-                    continue
-            print(f"Error generating image: {e}")
+            vertexai.init(project=project_id, location=location)
+        except Exception as init_err:
+            print(f"Failed to initialize Vertex AI at location {location}: {init_err}")
+            if loc_idx < len(locations) - 1:
+                print("Attempting fallback to next location...")
+                continue
             return False
             
+        for attempt in range(max_retries):
+            try:
+                # Use the latest Imagen 3 model
+                model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-002")
+                
+                print(f"Generating image for prompt in {location}: {prompt}")
+                
+                response = model.generate_images(
+                    prompt=prompt,
+                    number_of_images=1,
+                    aspect_ratio="1:1",
+                    # We want high quality, clear background
+                    negative_prompt="photorealistic, photography, realistic, 3d render, complex background, scenery, environment, landscape, room, messy, low resolution, ugly, disfigured, text, words",
+                    guidance_scale=7.5
+                )
+                
+                if response.images:
+                    image = response.images[0]
+                    image.save(output_path)
+                    print(f"Successfully saved image to {output_path} using location {location}")
+                    return True
+                else:
+                    print(f"No image was returned from the model at location {location}.")
+                    return False
+                    
+            except Exception as e:
+                err_msg = str(e)
+                # Check for transient quota/resource errors
+                is_transient = (
+                    "429" in err_msg or 
+                    "Quota" in err_msg or 
+                    "ResourceExhausted" in err_msg or 
+                    "Resource exhausted" in err_msg
+                )
+                
+                if is_transient:
+                    if attempt < max_retries - 1:
+                        sleep_time = base_delay * (2 ** attempt)
+                        print(f"[{location} - Quota Exceeded] Retrying in {sleep_time} seconds... (Attempt {attempt+1}/{max_retries})")
+                        time.sleep(sleep_time)
+                        continue
+                    else:
+                        print(f"[{location} - Quota Exceeded] All retries exhausted at location {location}.")
+                        break
+                else:
+                    # For fatal errors (permission, invalid prompt, etc.), abort immediately without fallback
+                    print(f"Fatal error generating image at location {location}: {e}")
+                    return False
+                    
     return False
 
 if __name__ == "__main__":
