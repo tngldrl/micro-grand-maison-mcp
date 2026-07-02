@@ -24,7 +24,7 @@ cancelled_projects = set()
 class CancelRequest(BaseModel):
     project_id: str
 
-app = FastAPI(title="Architecture World MCP Server")
+app = FastAPI(title="Micro Grand Maison MCP Server")
 
 @app.post("/cancel")
 def cancel(req: CancelRequest):
