@@ -5,7 +5,8 @@ import vertexai
 from vertexai.generative_models import GenerativeModel
 import google.api_core.exceptions
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+VERTEX_AI_LOCATION = os.getenv("VERTEX_AI_LOCATION", "us-central1")
 
 def call_with_retry(func, *args, max_retries=5, initial_backoff=2, **kwargs):
     """Call a Vertex AI function with exponential backoff on transient and 429 errors."""
@@ -75,7 +76,7 @@ CRITICAL VISUAL CONSTRAINTS for `avatar_chat_prompt` (Integrate these strictly i
 5. NO Background Contradiction: Do NOT include any descriptions of environments, locations, floor textures, ground shadows, or environment lighting that could contradict the flat green background instruction.
 """
 
-def extract_skeleton(metadata_context: str, project_id: str, location: str = "us-central1") -> str:
+def extract_skeleton(metadata_context: str, project_id: str, location: str = VERTEX_AI_LOCATION) -> str:
     """Phase 1: Extract the skeleton from metadata files."""
     vertexai.init(project=project_id, location=location)
     model = GenerativeModel(GEMINI_MODEL)
@@ -121,7 +122,7 @@ Context:
     )
     return response.text
 
-def extract_partial_graph(chunk_context: str, skeleton_json: str, project_id: str, location: str = "us-central1") -> str:
+def extract_partial_graph(chunk_context: str, skeleton_json: str, project_id: str, location: str = VERTEX_AI_LOCATION) -> str:
     """Phase 2: Extract partial architectural graph from an arbitrary chunk of code."""
     vertexai.init(project=project_id, location=location)
     
@@ -248,7 +249,7 @@ Code Chunk Context:
     )
     return response.text
 
-def synthesize_architecture(partial_graphs: list, project_id: str, location: str = "us-central1") -> str:
+def synthesize_architecture(partial_graphs: list, project_id: str, location: str = VERTEX_AI_LOCATION) -> str:
     """Phase 3: Combine all partial graphs into a final, consistent architecture."""
     # -----------------------------------------------------------------------
     # Deterministic Data Backup (Post-processing Guardrails)
@@ -512,7 +513,7 @@ Partial Analyses (from various chunks):
 
 from vertexai.generative_models import Content, Part
 
-def chat_with_character(system_prompt: str, history: list, new_message: str, project_id: str, location: str = "us-central1") -> str:
+def chat_with_character(system_prompt: str, history: list, new_message: str, project_id: str, location: str = VERTEX_AI_LOCATION) -> str:
     """Phase 3: Chat with a specific character agent."""
     vertexai.init(project=project_id, location=location)
     
