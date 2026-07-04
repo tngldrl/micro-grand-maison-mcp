@@ -5,7 +5,7 @@ import vertexai
 from vertexai.generative_models import GenerativeModel
 import google.api_core.exceptions
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 def call_with_retry(func, *args, max_retries=5, initial_backoff=2, **kwargs):
     """Call a Vertex AI function with exponential backoff on transient and 429 errors."""
