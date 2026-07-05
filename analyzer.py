@@ -34,7 +34,7 @@ def call_with_retry(func, *args, max_retries=5, initial_backoff=2, **kwargs):
                 raise e
 
 WORLD_SETTING = """
-WORLD SETTING FOR AVATARS:
+WORLD SETTING FOR AVATARS AND DESCRIPTIONS:
 The ecosystem must be represented as "A restaurant where various land, sea, and air animals work."
 You must assign one of the following restaurant staff roles to each microservice based on its technical function, and describe the character as an animal performing that role.
 
@@ -74,6 +74,17 @@ CRITICAL VISUAL CONSTRAINTS for `avatar_chat_prompt` (Integrate these strictly i
 3. The background MUST be completely flat, solid, and uniform chroma-key green. The prompt MUST end with: "The entire background is a single flat solid pure chroma-key green color (RGB: 0, 255, 0) with absolutely no details, no shadows, no flooring, no lighting effects on the background, and no scenery. The character is completely isolated against this flat green background."
 4. The art style MUST follow the exact same Pokemon-style creature design. Add the following to the prompt: "Art style: Pokemon-style creature art, anime monster mascot design, extremely oversized sparkling eyes with large white catchlight highlights (eyes are the most prominent facial feature), super-deformed chibi proportions (large head, tiny body), thick bold black outlines, bright cel-shading, vivid saturated colors."
 5. NO Background Contradiction: Do NOT include any descriptions of environments, locations, floor textures, ground shadows, or environment lighting that could contradict the flat green background instruction.
+
+CRITICAL TEXT AND LANGUAGE CONSTRAINTS for `description` and dependency `description` (MUST BE GENERATED IN JAPANESE):
+1. Microservice `description` MUST be a natural, concise, and friendly Japanese text.
+   - It MUST NOT directly mention the animal type (e.g., do NOT write "This represents a rabbit").
+   - It MUST NOT use redundant prefixes like "このマイクロサービスは、" or phrases like "本来のシステム的な役割としては、".
+   - It MUST seamlessly connect the restaurant staff role with the software architecture role.
+   - The style MUST strictly follow: 「[レストランスタッフとしての行動や役割の修飾]するレストランの『[役職(role_type)]』。[本来のシステム/アーキテクチャとしての役割や技術的特性の説明]」
+   - Example: 「お客様を出迎え、スムーズにテーブルにお客様を案内するレストランの『ホスト/ホステス（受付担当）』。外部から届くすべてのAPIリクエストを最初に受け取り、適切なマイクロサービスへと案内するAPIゲートウェイとして機能する。」
+2. Dependency `description` (in the `dependencies` list) MUST be a natural Japanese sentence or phrase that describes the communication between the source and target services.
+   - It MUST describe what is sent/requested and for what purpose (e.g. 「[目的]のために、[対象サービス]へ[データ/リクエスト]を送信する」).
+   - Example style: 「注文データを登録するために、注文サービスへリクエストを送信する」, 「認証情報を検証するために、認証サービスを呼び出す」
 """
 
 def extract_skeleton(metadata_context: str, project_id: str, location: str = VERTEX_AI_LOCATION) -> str:
@@ -135,7 +146,8 @@ def extract_partial_graph(chunk_context: str, skeleton_json: str, project_id: st
         "Extract the roles, scales, scale_tier (integer rating from 1 to 5 based on code volume and responsibility), repository_url, and dependencies for ALL services found in this chunk. "
         "Design a character prompt representing each service found. "
         "Additionally, identify the most important source files for each service to serve as exploration anchors during future chat sessions. "
-        "Specifically, identify the representative technologies used by each service."
+        "Specifically, identify the representative technologies used by each service. "
+        "CRITICAL: All generated description fields for microservices and their dependencies MUST be written in natural Japanese, combining the restaurant staff role analogy with the technical function as specified in WORLD_SETTING."
     )
     model = GenerativeModel(GEMINI_MODEL, system_instruction=[system_instruction])
     
@@ -152,6 +164,8 @@ CRITICAL INSTRUCTIONS FOR MICROSERVICE IDENTIFICATION:
 3. If a generic technology is merely utilized/accessed by a custom microservice, it should be listed in the 'technologies' array of the utilizing microservice, rather than being drawn as a separate component node.
 
 {WORLD_SETTING}
+
+CRITICAL: You MUST write the 'description' field of each microservice and the 'description' field of each dependency in Japanese, strictly following the Japanese and analogy constraints defined in WORLD_SETTING.
 
 For the 'key_files' field, identify up to 10 source files that are the best entry points
 for understanding this service during a chat session. Rules:
@@ -185,7 +199,10 @@ Code Chunk Context:
                     "type": "OBJECT",
                     "properties": {
                         "name": {"type": "STRING"},
-                        "description": {"type": "STRING"},
+                        "description": {
+                            "type": "STRING",
+                            "description": "Friendly description in Japanese. Combine the assigned restaurant staff role and animal analogy with its technical function, as specified in WORLD_SETTING."
+                        },
                         "scale_and_complexity": {"type": "STRING"},
                         "scale_tier": {
                             "type": "INTEGER",
@@ -200,7 +217,10 @@ Code Chunk Context:
                                 "type": "OBJECT",
                                 "properties": {
                                     "service_name": {"type": "STRING"},
-                                    "description": {"type": "STRING"}
+                                    "description": {
+                                        "type": "STRING",
+                                        "description": "Description of the dependency/interaction in Japanese (e.g. '注文情報を作成するために〇〇へリクエストを送信する'), describing the purpose and connection."
+                                    }
                                 },
                                 "required": ["service_name", "description"]
                             }
@@ -305,6 +325,7 @@ def synthesize_architecture(partial_graphs: list, project_id: str, location: str
 I have analyzed the codebase in arbitrary chunks and generated partial JSON profiles representing fragments of the ecosystem.
 Your task is to merge these PARTIAL GRAPHS into a single, unified Logical Architecture JSON.
 Crucially: DEDUPLICATE components. If 'cartservice' appears in 5 different chunks, merge its descriptions, scale_tier (retaining the max or most representative tier), key_files (combining unique paths across chunks, preserving perspectives and reasons, up to 10 total items), technologies (combining all unique technologies across chunks, preserving original technology names, up to 10 items total), and dependencies into ONE single 'cartservice' object.
+When merging 'description' and dependency 'description' fields, ensure they are written in Japanese, combining the restaurant staff role analogy with the technical function as specified in WORLD_SETTING.
 Resolve any conflicting names, ensure dependencies refer to existing logical services, and output the final validated array.
 Ensure you retain and resolve the correct 'repository_url', 'scale_tier', 'key_files', 'role_type', 'technologies', and 'avatar_prompt' (ensuring the detailed creative prompt is preserved or synthesized) for each merged microservice.
 
@@ -350,7 +371,10 @@ Partial Analyses (from various chunks):
                     "type": "OBJECT",
                     "properties": {
                         "name": {"type": "STRING"},
-                        "description": {"type": "STRING"},
+                        "description": {
+                            "type": "STRING",
+                            "description": "Friendly description in Japanese. Combine the assigned restaurant staff role and animal analogy with its technical function, as specified in WORLD_SETTING."
+                        },
                         "scale_and_complexity": {"type": "STRING"},
                         "scale_tier": {
                             "type": "INTEGER",
@@ -365,7 +389,10 @@ Partial Analyses (from various chunks):
                                 "type": "OBJECT",
                                 "properties": {
                                     "service_name": {"type": "STRING"},
-                                    "description": {"type": "STRING"}
+                                    "description": {
+                                        "type": "STRING",
+                                        "description": "Description of the dependency/interaction in Japanese (e.g. '注文情報を作成するために〇〇へリクエストを送信する'), describing the purpose and connection."
+                                    }
                                 },
                                 "required": ["service_name", "description"]
                              }
