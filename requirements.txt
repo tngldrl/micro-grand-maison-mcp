@@ -6,3 +6,4 @@ Pillow>=10.0.0
 fastapi>=0.111.0
 uvicorn>=0.30.0
 google-cloud-storage>=2.16.0
+cryptography==48.0.1
