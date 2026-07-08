@@ -28,7 +28,7 @@ def generate_avatar(prompt: str, output_path: str, project_id: str, locations: l
         for attempt in range(max_retries):
             try:
                 # Use the latest Imagen 3 model
-                model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-002")
+                model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-001")
                 
                 print(f"Generating image for prompt in {location}: {prompt}")
                 
