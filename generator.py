@@ -70,9 +70,10 @@ def generate_avatar(prompt: str, output_path: str, project_id: str, locations: l
                         print(f"[{location} - Quota Exceeded] All retries exhausted at location {location}.")
                         break
                 else:
-                    # For fatal errors (permission, invalid prompt, etc.), abort immediately without fallback
-                    print(f"Fatal error generating image at location {location}: {e}")
-                    return False
+                    # For other errors (permission, invalid prompt, regional support, model not visible, etc.),
+                    # print the error but fall back to the next location instead of aborting the entire function.
+                    print(f"Error generating image at location {location}: {e}")
+                    break
                     
     return False
 
