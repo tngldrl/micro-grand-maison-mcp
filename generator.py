@@ -40,7 +40,7 @@ def generate_avatar(prompt: str, output_path: str, project_id: str, locations: l
                     config=types.GenerateImagesConfig(
                         number_of_images=1,
                         aspect_ratio="1:1",
-                        negative_prompt="photorealistic, photography, realistic, 3d render, complex background, scenery, environment, landscape, room, messy, low resolution, ugly, disfigured, text, words",
+                        negative_prompt="photorealistic, photography, realistic, 3d render, complex background, scenery, environment, landscape, room, messy, low resolution, ugly, disfigured, text, words, shadows on background, gradient background, multi-tone background, environment lighting reflection",
                     ),
                 )
 

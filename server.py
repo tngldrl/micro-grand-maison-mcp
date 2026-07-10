@@ -197,12 +197,11 @@ def calculate_layout_coordinates(data: dict) -> dict:
 
 def make_background_transparent(image_path: str):
     """
-    Load an image, dynamically detect if the background is green-screen, black, or white,
-    and convert the background area to alpha transparency.
-    For green screens, global color keying is used to clear enclosed spaces (holes),
-    and boundary BFS is used for smooth edges.
-    For black/white screens, BFS is used to protect internal parts.
+    Load an image, convert to HSV color space, and dynamically segment the green-screen
+    background using a robust Hue tolerance filter.
+    Also handles black/white fallbacks smoothly.
     """
+    import colorsys
     img = Image.open(image_path).convert("RGBA")
     width, height = img.size
     pixels = list(img.getdata())
@@ -215,21 +214,30 @@ def make_background_transparent(image_path: str):
         pixels[height * width - 1]
     ]
     
-    # 相対的色相による頑強な緑判定
-    green_corners = sum(1 for r, g, b, a in corners if g > r + 30 and g > b + 30 and g > 80)
+    def rgb_to_hsv(r, g, b):
+        h, s, v = colorsys.rgb_to_hsv(r/255.0, g/255.0, b/255.0)
+        return h * 360.0, s * 100.0, v * 100.0
+
+    # Count how many corners classify as green in HSV space
+    green_corners = 0
+    for r, g, b, a in corners:
+        h, s, v = rgb_to_hsv(r, g, b)
+        if 80 <= h <= 165 and s > 30 and v > 30:
+            green_corners += 1
+            
     dark_corners = sum(1 for r, g, b, a in corners if r < 60 and g < 60 and b < 60)
-    
     new_pixels = []
     
     if green_corners >= 2:
         background_pixels = set()
         
-        # 1. 内側の孤立領域 (ホール) を消去するためのグローバル透過 (厳格判定)
+        # 1. Global strict green hue filter (clears inner holes)
         for idx, (r, g, b, a) in enumerate(pixels):
-            if g > r + 40 and g > b + 40 and g > 90:
+            h, s, v = rgb_to_hsv(r, g, b)
+            if 80 <= h <= 165 and s > 25 and v > 20:
                 background_pixels.add((idx % width, idx // width))
                 
-        # 2. キャラクター外周のエッジやグラデーションを消去するための境界BFS (寛容判定)
+        # 2. Tolerant boundary BFS to clean up dark green shadows and fuzzy edges
         visited = set()
         queue = []
         for x in range(width):
@@ -247,9 +255,10 @@ def make_background_transparent(image_path: str):
             
             idx = cy * width + cx
             r, g, b, a = pixels[idx]
+            h, s, v = rgb_to_hsv(r, g, b)
             
-            # 少し緩めの緑色優位度チェック
-            if g > r + 20 and g > b + 20 and g > 50:
+            # Tolerant bounds for border gradient greens
+            if 70 <= h <= 170 and s > 15 and v > 15:
                 background_pixels.add((cx, cy))
                 for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                     nx, ny = cx + dx, cy + dy
@@ -257,7 +266,7 @@ def make_background_transparent(image_path: str):
                         if (nx, ny) not in visited:
                             queue.append((nx, ny))
                             
-        # ピクセル書き換え
+        # Rewrite image pixels
         for y in range(height):
             for x in range(width):
                 idx = y * width + x
@@ -268,7 +277,7 @@ def make_background_transparent(image_path: str):
                     new_pixels.append((r, g, b, a))
                     
     else:
-        # 黒/白背景向け (下位互換性維持用のBFS境界探索)
+        # Fallback for black/white backgrounds (BFS boundary)
         is_dark_bg = dark_corners >= 2
         visited = set()
         queue = []
@@ -291,10 +300,10 @@ def make_background_transparent(image_path: str):
             
             should_remove = False
             if is_dark_bg:
-                if r < 35 and g < 35 and b < 35:
+                if r < 45 and g < 45 and b < 45:
                     should_remove = True
             else:
-                if r > 220 and g > 220 and b > 220:
+                if r > 210 and g > 210 and b > 210:
                     should_remove = True
                     
             if should_remove:
