@@ -345,11 +345,13 @@ def process_single_avatar(prompt: str, filename: str, url_key: str, ms_dict: dic
     if bucket_name:
         uploaded = upload_to_gcs(image_path, bucket_name, filename)
         
+    import time
+    ts = int(time.time())
     if uploaded:
-        ms_dict[url_key] = f"https://storage.googleapis.com/{bucket_name}/{filename}"
+        ms_dict[url_key] = f"https://storage.googleapis.com/{bucket_name}/{filename}?t={ts}"
     else:
         mcp_service_url = os.getenv("MCP_SERVICE_URL", "http://localhost:8001")
-        ms_dict[url_key] = f"{mcp_service_url}/static/avatars/{filename}"
+        ms_dict[url_key] = f"{mcp_service_url}/static/avatars/{filename}?t={ts}"
 
 def run_async_analysis(
     repo_urls: list[str],
